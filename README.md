@@ -1,18 +1,22 @@
 # ttyper
 
-A terminal typing speed test. Requires Node.js - no npm packages.
+A terminal typing speed test written in Go with zero dependencies.
 
-![demo](https://i.imgur.com/placeholder.png)
+## Install
+
+```sh
+go build -o ttyper .
+```
 
 ## Usage
 
 ```sh
-node ttyper.js              # 25 common words (default)
-node ttyper.js -n 50        # 50 words
-node ttyper.js -t 30        # 30-second timed mode
-node ttyper.js -m code      # programming vocabulary
-node ttyper.js -m quotes    # famous quotes
-node ttyper.js -h           # show help
+./ttyper                  # 25 common words (default)
+./ttyper -n 50            # 50 words
+./ttyper -t 30            # 30-second timed mode
+./ttyper -m code          # programming vocabulary
+./ttyper -m quotes        # famous quotes
+./ttyper -h               # show help
 ```
 
 ## Controls
@@ -29,12 +33,12 @@ node ttyper.js -h           # show help
 ## Modes
 
 - **common** - top ~200 most frequent English words
-- **code** - programming keywords and terms (JS/TS focused)
+- **code** - programming keywords and terms
 - **quotes** - famous quotes typed as full phrases, cycling through all quotes before repeating
 
 ## Settings menu
 
-Open with `ctrl+o`. Navigate with `↑↓` arrow keys and press `enter` to select.
+Open with `ctrl+o`. Navigate with arrow keys and press `enter` to select.
 
 Settings are saved to `~/.ttyper.json` and restored on next launch.
 
