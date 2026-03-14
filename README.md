@@ -1,6 +1,6 @@
 # ttyper
 
-A terminal typing speed test. No dependencies - just Node.js.
+A terminal typing speed test. Requires Node.js - no npm packages.
 
 ![demo](https://i.imgur.com/placeholder.png)
 
