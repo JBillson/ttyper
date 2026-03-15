@@ -110,12 +110,14 @@ type config struct {
 	WordCount int    `json:"wordCount"`
 	Mode      string `json:"mode"`
 	TimeLimit int    `json:"timeLimit"`
+	ErrorMode string `json:"errorMode"`
 }
 
 var cfg = config{
 	WordCount: 25,
 	Mode:      "common",
 	TimeLimit: 0,
+	ErrorMode: "normal",
 }
 
 func settingsPath() string {
@@ -137,6 +139,9 @@ func loadSettings() {
 			cfg.Mode = saved.Mode
 		}
 		cfg.TimeLimit = saved.TimeLimit
+		if saved.ErrorMode != "" {
+			cfg.ErrorMode = saved.ErrorMode
+		}
 	}
 }
 
@@ -145,10 +150,87 @@ func saveSettings() {
 	os.WriteFile(settingsPath(), data, 0644)
 }
 
+// ── High scores ──────────────────────────────────────────────────────────────
+
+type highScore struct {
+	WPM int `json:"wpm"`
+	Acc int `json:"acc"`
+}
+
+var highScores map[string]highScore
+
+func scoresPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".ttyper-scores.json")
+}
+
+func scoreKey() string {
+	if cfg.TimeLimit > 0 {
+		return fmt.Sprintf("%s|%s|t%d", cfg.Mode, cfg.ErrorMode, cfg.TimeLimit)
+	}
+	return fmt.Sprintf("%s|%s|w%d", cfg.Mode, cfg.ErrorMode, cfg.WordCount)
+}
+
+func loadScores() {
+	highScores = make(map[string]highScore)
+	data, err := os.ReadFile(scoresPath())
+	if err != nil {
+		return
+	}
+	json.Unmarshal(data, &highScores)
+}
+
+func saveScore(wpm, acc int) bool {
+	key := scoreKey()
+	prev, exists := highScores[key]
+	if exists && wpm <= prev.WPM {
+		return false
+	}
+	highScores[key] = highScore{WPM: wpm, Acc: acc}
+	data, _ := json.MarshalIndent(highScores, "", "  ")
+	os.WriteFile(scoresPath(), data, 0644)
+	return true
+}
+
+func getHighScore() (highScore, bool) {
+	s, ok := highScores[scoreKey()]
+	return s, ok
+}
+
+// scoreKeyWith builds a score key as if a specific menu item were selected.
+func scoreKeyWith(item menuItem) string {
+	mode := cfg.Mode
+	errorMode := cfg.ErrorMode
+	wordCount := cfg.WordCount
+	timeLimit := cfg.TimeLimit
+
+	switch item.category {
+	case "mode":
+		mode = item.mode
+	case "errors":
+		errorMode = item.mode
+	case "words":
+		wordCount = item.value
+		timeLimit = 0
+	case "time":
+		timeLimit = item.value
+	}
+
+	if timeLimit > 0 {
+		return fmt.Sprintf("%s|%s|t%d", mode, errorMode, timeLimit)
+	}
+	return fmt.Sprintf("%s|%s|w%d", mode, errorMode, wordCount)
+}
+
+func getHighScoreFor(item menuItem) (highScore, bool) {
+	s, ok := highScores[scoreKeyWith(item)]
+	return s, ok
+}
+
 // ── Menu items ───────────────────────────────────────────────────────────────
 
 type menuItem struct {
-	category string // "mode", "words", "time"
+	category string // "mode", "words", "time", "errors"
 	mode     string
 	value    int
 }
@@ -161,6 +243,8 @@ func (m menuItem) isActive() bool {
 		return cfg.WordCount == m.value && cfg.TimeLimit == 0
 	case "time":
 		return cfg.TimeLimit == m.value
+	case "errors":
+		return cfg.ErrorMode == m.mode
 	}
 	return false
 }
@@ -168,6 +252,8 @@ func (m menuItem) isActive() bool {
 func (m menuItem) label() string {
 	switch m.category {
 	case "mode":
+		return m.mode
+	case "errors":
 		return m.mode
 	case "time":
 		if m.value == 0 {
@@ -182,6 +268,9 @@ var allMenuItems = []menuItem{
 	{category: "mode", mode: "common"},
 	{category: "mode", mode: "code"},
 	{category: "mode", mode: "quotes"},
+	{category: "errors", mode: "normal"},
+	{category: "errors", mode: "strict"},
+	{category: "errors", mode: "impossible"},
 	{category: "words", value: 10},
 	{category: "words", value: 25},
 	{category: "words", value: 50},
@@ -204,6 +293,8 @@ type gameState struct {
 	endTime           time.Time
 	started           bool
 	finished          bool
+	failed            bool
+	newBest           bool
 	totalKeystrokes   int
 	correctKeystrokes int
 	mode              string
@@ -363,7 +454,11 @@ func renderGame(w int) {
 	} else {
 		timePart = fmt.Sprintf(" · %s%d words%s", cAccent, cfg.WordCount, cReset)
 	}
-	header := fmt.Sprintf("%s%sttyper%s  %s%s%s", cBold, cAccent, cReset, cDim, modeLabel, timePart)
+	var bestPart string
+	if best, ok := getHighScore(); ok {
+		bestPart = fmt.Sprintf(" · %sbest: %d wpm%s", cDim, best.WPM, cReset)
+	}
+	header := fmt.Sprintf("%s%sttyper%s  %s%s%s%s", cBold, cAccent, cReset, cDim, modeLabel, timePart, bestPart)
 	scWrite(centerStr(header, w))
 
 	// Live stats
@@ -508,18 +603,31 @@ func renderResults(w int) {
 		}
 	}
 
+	var title string
+	if state.failed {
+		title = cBold + cWrong + "-- failed --" + cReset
+	} else {
+		title = cBold + cAccent + "-- results --" + cReset
+	}
+
 	lines := []string{
 		"",
-		cBold + cAccent + "-- results --" + cReset,
+		title,
 		"",
 		fmt.Sprintf("%swpm     %s%s%d%s", cDim, cBold, cWhite, wpm, cReset),
 		fmt.Sprintf("%sacc     %s%s%d%%%s", cDim, cBold, cWhite, acc, cReset),
 		fmt.Sprintf("%stime    %s%s%.1fs%s", cDim, cBold, cWhite, elapsed, cReset),
 		fmt.Sprintf("%scorrect %s%s%d%s", cDim, cBold, cCorrect, correct, cReset),
 		fmt.Sprintf("%swrong   %s%s%d%s", cDim, cBold, cWrong, wrong, cReset),
-		"",
-		cDim + "tab: restart  ctrl+o: menu  ctrl+c: quit" + cReset,
 	}
+
+	if state.newBest {
+		lines = append(lines, "", cBold+cCorrect+"new best!"+cReset)
+	} else if best, ok := getHighScore(); ok {
+		lines = append(lines, "", fmt.Sprintf("%sbest    %s%s%d wpm%s", cDim, cBold, cAccent, best.WPM, cReset))
+	}
+
+	lines = append(lines, "", cDim+"tab: restart  ctrl+o: menu  ctrl+c: quit"+cReset)
 
 	startRow := h/2 - len(lines)/2
 	for i, l := range lines {
@@ -535,7 +643,7 @@ func renderMenu(w int) {
 	scShow()
 
 	idx := 0
-	itemLine := func(item menuItem) string {
+	itemLine := func(item menuItem, desc string) string {
 		i := idx
 		idx++
 		active := item.isActive()
@@ -552,30 +660,42 @@ func renderMenu(w int) {
 			prefix = "  "
 			text = cPending + item.label()
 		}
-		return "  " + prefix + text + cReset
+		line := "  " + prefix + text + cReset
+		if desc != "" {
+			line += "  " + cDim + desc + cReset
+		}
+		if s, ok := getHighScoreFor(item); ok {
+			line += "  " + cDim + fmt.Sprintf("%d wpm", s.WPM) + cReset
+		}
+		return line
 	}
 
 	lines := []string{
 		cBold + cAccent + "-- settings --" + cReset,
 		"",
 		cDim + "mode" + cReset,
-		itemLine(allMenuItems[0]),
-		itemLine(allMenuItems[1]),
-		itemLine(allMenuItems[2]),
+		itemLine(allMenuItems[0], ""),
+		itemLine(allMenuItems[1], ""),
+		itemLine(allMenuItems[2], ""),
+		"",
+		cDim + "difficulty" + cReset,
+		itemLine(allMenuItems[3], "mistakes are allowed"),
+		itemLine(allMenuItems[4], "submit a wrong word and you fail"),
+		itemLine(allMenuItems[5], "one wrong key and you fail"),
 		"",
 		cDim + "words" + cReset + "  " + cDim + "(word count mode)" + cReset,
-		itemLine(allMenuItems[3]),
-		itemLine(allMenuItems[4]),
-		itemLine(allMenuItems[5]),
-		itemLine(allMenuItems[6]),
+		itemLine(allMenuItems[6], ""),
+		itemLine(allMenuItems[7], ""),
+		itemLine(allMenuItems[8], ""),
+		itemLine(allMenuItems[9], ""),
 		"",
 		cDim + "time" + cReset + "   " + cDim + "(timed mode)" + cReset,
-		itemLine(allMenuItems[7]),
-		itemLine(allMenuItems[8]),
-		itemLine(allMenuItems[9]),
-		itemLine(allMenuItems[10]),
+		itemLine(allMenuItems[10], ""),
+		itemLine(allMenuItems[11], ""),
+		itemLine(allMenuItems[12], ""),
+		itemLine(allMenuItems[13], ""),
 		"",
-		cDim + "↑↓: navigate  enter: select  esc: close  tab: restart" + cReset,
+		cDim + "↑↓/jk: navigate  enter: select  esc: close  tab: restart" + cReset,
 	}
 
 	startRow := h/2 - len(lines)/2
@@ -686,6 +806,12 @@ func handleKey(key string) bool {
 		if len(state.currentInput) == 0 {
 			return false
 		}
+		// Strict: moving on from a word with a mistake = instant fail
+		if cfg.ErrorMode == "strict" && state.currentInput != word {
+			state.failed = true
+			finishGame()
+			return false
+		}
 		submitWord()
 		return false
 	}
@@ -693,9 +819,18 @@ func handleKey(key string) bool {
 	// Printable ASCII
 	if len(key) == 1 && key[0] >= ' ' {
 		state.totalKeystrokes++
-		if len(state.currentInput) < len(word) && key[0] == word[len(state.currentInput)] {
+		correct := len(state.currentInput) < len(word) && key[0] == word[len(state.currentInput)]
+		if correct {
 			state.correctKeystrokes++
 		}
+
+		// Impossible: any wrong key = instant fail
+		if cfg.ErrorMode == "impossible" && !correct {
+			state.failed = true
+			finishGame()
+			return false
+		}
+
 		state.currentInput += key
 		render()
 		return false
@@ -707,15 +842,15 @@ func handleKey(key string) bool {
 func handleMenuKey(key string) {
 	total := len(allMenuItems)
 
-	// Arrow up
-	if key == "\x1b[A" {
+	// Up: arrow up or k
+	if key == "\x1b[A" || key == "k" {
 		state.menuCursor = (state.menuCursor - 1 + total) % total
 		render()
 		return
 	}
 
-	// Arrow down
-	if key == "\x1b[B" {
+	// Down: arrow down or j
+	if key == "\x1b[B" || key == "j" {
 		state.menuCursor = (state.menuCursor + 1) % total
 		render()
 		return
@@ -727,6 +862,8 @@ func handleMenuKey(key string) {
 		switch item.category {
 		case "mode":
 			cfg.Mode = item.mode
+		case "errors":
+			cfg.ErrorMode = item.mode
 		case "words":
 			cfg.WordCount = item.value
 			cfg.TimeLimit = 0
@@ -761,6 +898,9 @@ func submitWord() {
 func finishGame() {
 	state.endTime = time.Now()
 	state.finished = true
+	if !state.failed {
+		state.newBest = saveScore(calcWPM(), calcAccuracy())
+	}
 	if state.ticker != nil {
 		state.ticker.Stop()
 		state.ticker = nil
@@ -785,6 +925,7 @@ func cleanup() {
 
 func main() {
 	loadSettings()
+	loadScores()
 
 	args := os.Args[1:]
 	for i := 0; i < len(args); i++ {
