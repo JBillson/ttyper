@@ -1,6 +1,6 @@
 # ttyper
 
-A terminal typing speed test written in Go with zero dependencies.
+A terminal typing speed test written in Go.
 
 ## Install
 
